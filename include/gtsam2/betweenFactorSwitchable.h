@@ -20,7 +20,7 @@ using std::endl;
 #include "switchVariableSigmoid.h"
 
 
-namespace robust_gtsam {
+namespace vertigo {
 
   template<class VALUE>
   class BetweenFactorSwitchableLinear : public gtsam::NoiseModelFactor3<VALUE, VALUE, SwitchVariableLinear>

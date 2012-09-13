@@ -8,6 +8,7 @@
 #include <gtsam/slam/planarSLAM.h>
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Marginals.h>
 
 using namespace gtsam;
 
@@ -19,12 +20,15 @@ namespace po = boost::program_options;
 #define foreach BOOST_FOREACH
 
 #include <boost/progress.hpp>
+#include <boost/lexical_cast.hpp>
+
 
 #include "betweenFactorSwitchable.h"
 #include "switchVariableLinear.h"
 #include "switchVariableSigmoid.h"
-
-using namespace robust_gtsam;
+#include "betweenFactorMaxMix.h"
+#include "timer.h"
+using namespace vertigo;
 
 
 // ===================================================================
@@ -37,7 +41,9 @@ struct Edge {
   int i, j;
   double x, y, th;
   bool switchable;
+  bool maxMix;
   Matrix covariance;
+  double weight;
 };
 
 
@@ -91,15 +97,21 @@ bool parseDataset(string inputFile, vector<Pose>&poses, vector<Edge>&edges,multi
 			 poses.push_back(p);
 		 }
 
-		 else if (type == "EDGE_SE2_SWITCHABLE" || type == "EDGE_SE2") {
+		 else if (type == "EDGE_SE2_SWITCHABLE" || type == "EDGE_SE2" || type == "EDGE_SE2_MAXMIX") {
 			 double dummy;
 			 Edge e;
 
 			 // read pose IDs
 			 inFile >> e.i >> e.j;
 
+			 if (e.i>e.j) {
+			   swap(e.i,e.j);
+			 }
+
 			 // read the switch variable ID (only needed in g2o, we dont need it here in the gtsam world)
 			 if (type == "EDGE_SE2_SWITCHABLE") inFile >> dummy;
+			 if (type == "EDGE_SE2_MAXMIX") inFile >> e.weight;
+
 
 			 // read odometry measurement
 			 inFile >> e.x >> e.y >> e.th;
@@ -110,8 +122,18 @@ bool parseDataset(string inputFile, vector<Pose>&poses, vector<Edge>&edges,multi
 			 Matrix informationMatrix = Matrix_(3,3, info[0], info[1], info[2], info[1], info[3], info[4], info[2], info[4], info[5]);
 			 e.covariance = inverse(informationMatrix);
 
-			 if (type == "EDGE_SE2_SWITCHABLE") e.switchable=true;
-			 else e.switchable=false;
+			 if (type == "EDGE_SE2_SWITCHABLE") {
+			   e.switchable=true;
+			   e.maxMix=false;
+			 }
+			 else if (type == "EDGE_SE2_MAXMIX") {
+			   e.switchable=false;
+			   e.maxMix=true;
+			 }
+			 else {
+			   e.switchable=false;
+			   e.maxMix=false;
+			 }
 
 			 edges.push_back(e);
 
@@ -149,6 +171,7 @@ int main(int argc, char *argv[])
       ("qr", "Use QR factorization instead of Cholesky.")
       ("relinSkip", po::value<int>(&isam2Params.relinearizeSkip)->default_value(10), "Only relinearize any variables every relinearizeSkip calls to ISAM2::update (default: 10)")
       ("relinThresh", po::value<double>(&relinThresh)->default_value(0.1),"Only relinearize variables whose linear delta magnitude is greater than this threshold." )
+      ("odoOnly", "Only use odometry edges, discard all other edges in the graph.")
     ;
 
     po::variables_map vm;
@@ -210,6 +233,9 @@ int main(int argc, char *argv[])
     int counter=0;
     int switchCounter=-1;
 
+    planarSLAM::Values globalInitialEstimate;
+    Timer timer;
+
     // iterate through the poses and incrementally build and solve the graph, using iSAM2
     foreach (Pose p, poses) {
 
@@ -218,28 +244,41 @@ int main(int argc, char *argv[])
 
 
     	 // find all the edges that involve this pose
-    	pair<multimap<int, int>::iterator, multimap<int, int>::iterator > ret = poseToEdges.equal_range(p.id);
+
+      timer.tic("findEdges");
+      pair<multimap<int, int>::iterator, multimap<int, int>::iterator > ret = poseToEdges.equal_range(p.id);
+      timer.toc("findEdges");
+
     	for (multimap<int, int>::iterator it=ret.first; it!=ret.second; it++) {
 
     	  // look at the edge and see if it is switchable or not
     	  Edge e = edges[it->second];
 
+
     	  // see if this is an odometry edge, if yes, use it to initialize the current pose
     	  if (e.j==e.i+1) {
+    	    timer.tic("initialize");
     	    Pose2 predecessorPose = isam2.calculateEstimate<Pose2>(planarSLAM::PoseKey(p.id-1));
     	    if (isnan(predecessorPose.x()) || isnan(predecessorPose.y()) || isnan(predecessorPose.theta())) {
     	      cout << "! Degenerated solution (NaN) detected. Solver failed." << endl;
+    	      writeResults(globalInitialEstimate, outputFile);
+    	      timer.print(cout);
     	      return 0;
     	    }
     	    initialEstimate.insertPose(p.id, predecessorPose * Pose2(e.x, e.y, e.th));
+    	    globalInitialEstimate.insertPose(p.id,  predecessorPose * Pose2(e.x, e.y, e.th) );
+    	    timer.toc("initialize");
     	  }
 
-    		if (!e.switchable) {
-    		  // this is easy, use the convenience functions of gtsam
-    		  SharedNoiseModel odom_model = noiseModel::Gaussian::Covariance(e.covariance);
-    		  graph.addOdometry(e.i, e.j, Pose2(e.x, e.y, e.th), odom_model);
+    	  timer.tic("addEdges");
+    		if (!e.switchable && !e.maxMix) {
+    		  if (!vm.count("odoOnly") || (e.j == e.i+1) ) {
+    		    // this is easy, use the convenience functions of gtsam
+    		    SharedNoiseModel odom_model = noiseModel::Gaussian::Covariance(e.covariance);
+    		    graph.addOdometry(e.i, e.j, Pose2(e.x, e.y, e.th), odom_model);
+    		  }
     		}
-    		else {
+    		else if (e.switchable && !vm.count("odoOnly")) {
     		  if (!useSigmoid) {
             // create new switch variable
             initialEstimate.insert(Symbol('s',++switchCounter),SwitchVariableLinear(1.0));
@@ -271,6 +310,15 @@ int main(int argc, char *argv[])
     		    graph.push_back(switchableFactor);
     		  }
     		}
+    		else if (e.maxMix && !vm.count("odoOnly")) {
+    		  // create mixture odometry factor
+    		  SharedNoiseModel odom_model = noiseModel::Gaussian::Covariance(e.covariance);
+    		  SharedNoiseModel null_model = noiseModel::Gaussian::Covariance(e.covariance / e.weight);
+
+    		  boost::shared_ptr<NonlinearFactor> maxMixFactor(new BetweenFactorMaxMix<Pose2>(planarSLAM::PoseKey(e.i), planarSLAM::PoseKey(e.j), Pose2(e.x, e.y, e.th), odom_model, null_model, e.weight));
+    		  graph.push_back(maxMixFactor);
+    		}
+    		timer.toc("addEdges");
     	}
 
 
@@ -283,18 +331,43 @@ int main(int argc, char *argv[])
     		initialEstimate.insertPose(p.id, Pose2(p.x, p.y, p.th));
     	}
 
-    	ISAM2Result result = isam2.update(graph, initialEstimate);
-    	if (verbose) cout << "cliques: " << result.cliques << "\terr_before: " << result.errorBefore << "\terr_after: " << result.errorAfter << "\trelinearized: " << result.variablesRelinearized << endl;
+
+
+
+
+    	if (verbose) {
+    	  timer.tic("update");
+    	  ISAM2Result result = isam2.update(graph, initialEstimate);
+    	  timer.toc("update");
+    	  cout << "cliques: " << result.cliques << "\terr_before: " << *(result.errorBefore) << "\terr_after: " << *(result.errorAfter) << "\trelinearized: " << result.variablesRelinearized << endl;
+    	}
+    	else  {
+    	  timer.tic("update");
+    	  isam2.update(graph, initialEstimate);
+    	  timer.toc("update");
+    	}
 
 
     	if (!verbose) ++show_progress;
     	if ( (counter++ >= stop) && (stop>0)) break;
 
+    	if (false) {
+    	  timer.tic("marginals");
 
+    	  gtsam::Marginals marginals(isam2.getFactorsUnsafe(), isam2.getLinearizationPoint());
+    	  gtsam::Matrix cov = marginals.marginalCovariance(gtsam::Symbol('x', p.id));
+    	  timer.toc("marginals");
+    	  cout << cov << endl << endl;
+    	}
+
+/*
     	if (counter % 100 == 0) {
     	  Values results = isam2.calculateEstimate();
-    	  writeResults(results, outputFile);
+    	  char fileName[1024];
+    	  sprintf(fileName, "results/results_%05d.isam", counter);
+    	  writeResults(results, string(fileName));
     	}
+*/
     }
 
 
@@ -304,8 +377,7 @@ int main(int argc, char *argv[])
     //results.print();
 
 
-
-
+    timer.print(cout);
 
     // === write results ===
 

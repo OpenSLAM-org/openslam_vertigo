@@ -13,7 +13,7 @@
 #include <gtsam/base/DerivedValue.h>
 #include <gtsam/base/Lie.h>
 
-namespace robust_gtsam {
+namespace vertigo {
 
   /**
    * SwitchVariableSigmoid is a wrapper around double to allow it to be a Lie type

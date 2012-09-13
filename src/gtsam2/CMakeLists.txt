@@ -11,15 +11,17 @@ find_package(GTSAM REQUIRED)
 
 # specify our own source files that need to be compiled and linked into the lib
 set(SOURCEFILES
+  ../timer.cpp
   betweenFactorSwitchable.cpp
 )
 
+include_directories(${PROJECT_SOURCE_DIR}/../../include)
 include_directories(${PROJECT_SOURCE_DIR}/../../include/gtsam2)
 include_directories(${GTSAM_INCLUDE_DIR})
 
 add_library(${PROJECT_NAME} SHARED ${SOURCEFILES})
 
-set (LINKLIBRARIES ${GTSAM_LIBRARIES} )
+set (LINKLIBRARIES ${GTSAM_LIBS} )
 
 target_link_libraries(${PROJECT_NAME} ${LINKLIBRARIES}) 
 

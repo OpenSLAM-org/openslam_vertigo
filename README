@@ -8,8 +8,8 @@ It provides a C++ implementation of the switchable constraints described in
 [2,3]. This extension enables g2o or gtsam to solve pose graph SLAM problems
 in 2D and 3D despite a large number of false positive loop closure constraints.
 	
-In addition, a re-implementation of the max-mixture model described in [4] for
-g2o is also contained.
+In addition, a re-implementation of the max-mixture model described in [4]
+is also contained.
 
 Furthermore, Vertigo contains a number of standard pose graph SLAM datasets 
 and a script to spoil them with false positive loop closure constraints.
