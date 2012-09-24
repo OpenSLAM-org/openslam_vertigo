@@ -45,7 +45,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ===  How to compile  ===
 
 Dependencies:
-  Either one or both of g2o and gtsam >= 2.0.0
+  Either one or both of g2o and gtsam. 
+  Vertigo has been tested with:
+  - gtsam 2.0.0
+  - g2o rev.19 (SVN from openslam.org)
+ 
 
 All other dependencies are shared with g2o or gtsam. If you can compile them,
 you should be fine.
